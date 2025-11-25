@@ -267,35 +267,49 @@ def edit_employee(id=None):
     emp = Employee.query.get(id) if id else None
 
     if request.method == 'POST':
-        # Обновляем основные поля
-        emp.full_name = request.form['full_name'].strip()
-        emp.position = request.form['position'].strip()
-        emp.section = request.form.get('section', '').strip() or 'Общий'
+        full_name = request.form['full_name'].strip()
+        position = request.form['position'].strip()
+        section = request.form.get('section', '').strip() or 'Общий'
         birth_date_str = request.form.get('birth_date', '').strip()
-        emp.birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None
-        emp.address = request.form.get('address', '').strip() or None
+        address = request.form.get('address', '').strip()
 
-        # === ОБУЧЕНИЕ — можно пересоздать (там нет дат) ===
+        # ← ИСПРАВЛЕНО: создаём объект только если его нет
+        if not emp:
+            emp = Employee(
+                full_name=full_name,
+                position=position,
+                section=section,
+                birth_date=datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None,
+                address=address or None
+            )
+            db.session.add(emp)
+            db.session.flush()  # чтобы появился emp.id
+            flash("Сотрудник успешно добавлен!", "success")
+        else:
+            # Редактируем существующий
+            emp.full_name = full_name
+            emp.position = position
+            emp.section = section
+            emp.birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None
+            emp.address = address or None
+
+        # === Обучение (можно пересоздавать) ===
         EmployeeTraining.query.filter_by(employee_id=emp.id).delete()
         for tr in TrainingType.query.all():
             period = int(request.form.get(f'training_{tr.id}', tr.default_periodicity))
             db.session.add(EmployeeTraining(employee_id=emp.id, training_type_id=tr.id, periodicity_months=period))
 
-        # === ВРЕДНОСТИ — НЕ УДАЛЯЕМ! Только обновляем ===
-        # 1. Получаем текущие вредности сотрудника
+        # === Вредности — умная логика (не теряем даты!) ===
         current_hazards = {eh.hazard_id: eh for eh in emp.employee_hazards}
-
-        # 2. Выбранные в форме
         selected_hazard_ids = {int(x) for x in request.form.getlist('hazards')}
 
-        # 3. Удаляем те, что убрали из списка
+        # Удаляем убранные
         for hazard_id, eh in list(current_hazards.items()):
             if hazard_id not in selected_hazard_ids:
-                # Удаляем связь и все связанные проверки!
                 EmployeeCheck.query.filter_by(kind='hazard', kind_id=eh.id).delete()
                 db.session.delete(eh)
 
-        # 4. Добавляем новые
+        # Добавляем новые
         for hazard_id in selected_hazard_ids:
             if hazard_id not in current_hazards:
                 hazard = Hazard.query.get(hazard_id)
@@ -306,7 +320,7 @@ def edit_employee(id=None):
                 )
                 db.session.add(new_eh)
 
-        # 5. Обновляем периодичность у существующих (на случай изменения в админке)
+        # Обновляем периодичность у существующих (если изменили в админке)
         for eh in emp.employee_hazards:
             hazard = Hazard.query.get(eh.hazard_id)
             eh.periodicity_months = hazard.periodicity_months
@@ -315,7 +329,7 @@ def edit_employee(id=None):
         flash("Сотрудник сохранён! Даты прохождения не затронуты.", "success")
         return redirect(url_for('index'))
 
-    # GET — как было
+    # GET — отображение формы
     trainings = TrainingType.query.all()
     hazards = Hazard.query.all()
     emp_trainings = {et.training_type_id: et.periodicity_months for et in (emp.employee_trainings if emp else [])}
@@ -325,10 +339,14 @@ def edit_employee(id=None):
     current_address = emp.address if emp else ''
 
     return render_template('edit_employee.html',
-                           emp=emp, trainings=trainings, hazards=hazards,
-                           emp_trainings=emp_trainings, emp_hazards=emp_hazards,
+                           emp=emp,
+                           trainings=trainings,
+                           hazards=hazards,
+                           emp_trainings=emp_trainings,
+                           emp_hazards=emp_hazards,
                            current_section=current_section,
-                           current_birth_date=current_birth_date, current_address=current_address)
+                           current_birth_date=current_birth_date,
+                           current_address=current_address)
 # ====================== УДАЛЕНИЕ ======================
 @app.route('/delete/<int:id>')
 @admin_required
