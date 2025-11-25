@@ -3,6 +3,12 @@ from functools import wraps
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 
+from datetime import datetime
+
+def format_date(date_obj):
+    if date_obj:
+        return date_obj.strftime("%d.%m.%Y")
+    return "—"
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret2025'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
@@ -14,6 +20,7 @@ class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     full_name = db.Column(db.String(100), nullable=False)
     position = db.Column(db.String(100), nullable=False)
+    section = db.Column(db.String(100))
 
     employee_hazards = db.relationship('EmployeeHazard', backref='employee', lazy=True, cascade="all, delete-orphan")
     employee_trainings = db.relationship('EmployeeTraining', backref='employee', lazy=True, cascade="all, delete-orphan")
@@ -89,7 +96,7 @@ def init_db():
 # ====================== АВТОРИЗАЦИЯ ======================
 # Хардкод пользователей (можно потом вынести в БД)
 USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
+    "pasha": {"password": "Test1234", "role": "admin"},
     "user":  {"password": "user123",  "role": "user"},
     # Добавляй сколько угодно: "ivanov": {"password": "123", "role": "user"},
 }
@@ -140,6 +147,7 @@ def logout():
 def index():
     search = request.args.get('search', '').strip()
     position = request.args.get('position', '')
+    section_filter = request.args.get('section', '')
     status = request.args.get('status', '')      # overdue / soon
 
     query = Employee.query
@@ -147,11 +155,16 @@ def index():
         query = query.filter(Employee.full_name.ilike(f'%{search}%'))
     if position:
         query = query.filter(Employee.position == position)
+    if section_filter:
+        query = query.filter(Employee.section == section_filter)
 
     employees = query.all()
     today = datetime.today().date()
     data = []
-    positions = sorted({e.position for e in Employee.query.all() if e.position})
+    row_number = 1  # ← нумерация
+
+    # Список всех участков для фильтра
+    all_sections = sorted({e.section for e in Employee.query.all() if e.section})
 
     for emp in employees:
         checks = []
@@ -192,39 +205,56 @@ def index():
             })
 
         if show_employee or not status:
-            data.append({'emp': emp, 'checks': checks})
+            data.append({
+                'number': row_number,
+                'emp': emp,
+                'checks': checks
+            })
+            row_number += 1
 
-    return render_template('index.html', data=data, search=search, position=position,
-                           status=status, positions=positions, format_period=format_period)
+    return render_template('index.html',
+                           data=data,
+                           search=search,
+                           position=position,
+                           section_filter=section_filter,
+                           status=status,
+                           positions=sorted({e.position for e in Employee.query.all()}),
+                           sections=all_sections,
+                           format_period=format_period,
+                           format_date=format_date)
 
 # ====================== УСТАНОВКА ДАТЫ И НОМЕРА ======================
 @app.route('/set_date', methods=['POST'])
-@admin_required
+@login_required
 def set_date():
-    emp_id = int(request.form['emp_id'])
-    kind = request.form['kind']
-    kind_id = int(request.form['kind_id'])
-    date_str = request.form.get('date', '').strip()
-    doc_num = request.form.get('doc_number', '').strip() or None
+    try:
+        emp_id = int(request.form['emp_id'])
+        kind = request.form['kind'].strip()
+        kind_id = int(request.form['kind_id'])
+        date_str = request.form.get('date', '').strip()
+        doc_number = request.form.get('doc_number', '').strip() or None
+    except:
+        flash("Ошибка данных", "danger")
+        return redirect(url_for('index'))
 
-    ec = EmployeeCheck.query.filter_by(employee_id=emp_id, kind=kind, kind_id=kind_id).first()
-
-    if date_str:
-        new_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        if ec:
-            ec.last_date = new_date
-            ec.document_number = doc_num
-        else:
-            ec = EmployeeCheck(employee_id=emp_id, kind=kind, kind_id=kind_id,
-                               last_date=new_date, document_number=doc_num)
-            db.session.add(ec)
+    if not date_str:
+        EmployeeCheck.query.filter_by(employee_id=emp_id, kind=kind, kind_id=kind_id).delete()
     else:
-        if ec:
-            db.session.delete(ec)
+        new_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        check = EmployeeCheck.query.filter_by(employee_id=emp_id, kind=kind, kind_id=kind_id).first()
+        if check:
+            check.last_date = new_date
+            check.document_number = doc_number
+        else:
+            check = EmployeeCheck(employee_id=emp_id, kind=kind, kind_id=kind_id,
+                                  last_date=new_date, document_number=doc_number)
+            db.session.add(check)
 
     db.session.commit()
-    ref = request.referrer or url_for('index')
-    return redirect(ref)
+    flash("Сохранено!", "success")
+
+    # ← ВОТ ГЛАВНОЕ: возвращаемся к этому сотруднику с открытой карточкой
+    return redirect(url_for('index') + f"?open_id={emp_id}#collapse{emp_id}")
 
 # ====================== РЕДАКТИРОВАНИЕ СОТРУДНИКА (без потери дат!) ======================
 @app.route('/employee/add', methods=['GET', 'POST'])
@@ -234,42 +264,70 @@ def edit_employee(id=None):
     emp = Employee.query.get(id) if id else None
 
     if request.method == 'POST':
-        full_name = request.form['full_name']
-        position = request.form['position']
+        full_name = request.form['full_name'].strip()
+        position = request.form['position'].strip()
+        section = request.form.get('section').strip()
+        if not section:
+            section = 'Общий'
 
         if not emp:
-            emp = Employee(full_name=full_name, position=position)
+            emp = Employee(full_name=full_name, position=position, section=section)
             db.session.add(emp)
             db.session.flush()
-            create_new = True
+            is_new = True
         else:
             emp.full_name = full_name
             emp.position = position
-            create_new = False
+            emp.section = section
+            is_new = False
 
-        if create_new:
-            # Только при создании нового сотрудника создаём связи
-            for tr in TrainingType.query.all():
-                period = int(request.form.get(f'training_{tr.id}', tr.default_periodicity))
+        db.session.flush()
+
+        if is_new:
+            pass  # при создании старых связей нет
+        else:
+            # Удаляем старые связи только при редактировании
+            EmployeeTraining.query.filter_by(employee_id=emp.id).delete()
+            EmployeeHazard.query.filter_by(employee_id=emp.id).delete()
+
+        # Создаём новые связи
+        for tr in TrainingType.query.all():
+            period_str = request.form.get(f'training_{tr.id}')
+            if period_str and period_str.strip():
+                period = int(period_str)
                 et = EmployeeTraining(employee_id=emp.id, training_type_id=tr.id, periodicity_months=period)
                 db.session.add(et)
 
-            for h_id in request.form.getlist('hazards'):
-                h = Hazard.query.get(int(h_id))
-                eh = EmployeeHazard(employee_id=emp.id, hazard_id=h.id, periodicity_months=h.periodicity_months)
-                db.session.add(eh)
+        for h_id in request.form.getlist('hazards'):
+            h_id = int(h_id)
+            hazard = Hazard.query.get(h_id)
+            eh = EmployeeHazard(
+                employee_id=emp.id,
+                hazard_id=h_id,
+                periodicity_months=hazard.periodicity_months
+            )
+            db.session.add(eh)
 
         db.session.commit()
+        flash("Сотрудник сохранён!", "success")
         return redirect(url_for('index'))
 
+    # GET — отображение формы
     trainings = TrainingType.query.all()
     hazards = Hazard.query.all()
     emp_trainings = {et.training_type_id: et.periodicity_months for et in (emp.employee_trainings if emp else [])}
-    emp_hazards = [eh.hazard_id for eh in (emp.employee_hazards if emp else [])]
+    emp_hazards ={eh.hazard_id for eh in (emp.employee_hazards if emp else [])}
 
-    return render_template('edit_employee.html', emp=emp, trainings=trainings, hazards=hazards,
-                           emp_trainings=emp_trainings, emp_hazards=emp_hazards, format_period=format_period)
+    # ← ВАЖНО: безопасно передаём section
+    current_section = emp.section if emp else ''
 
+    return render_template('edit_employee.html',
+                           emp=emp,
+                           trainings=trainings,
+                           hazards=hazards,
+                           emp_trainings=emp_trainings,
+                           emp_hazards=emp_hazards,
+                           current_section=current_section)
 # ====================== УДАЛЕНИЕ ======================
 @app.route('/delete/<int:id>')
 @admin_required
@@ -299,10 +357,21 @@ def add_hazard():
 def edit_hazard(id):
     h = Hazard.query.get_or_404(id)
     if request.method == 'POST':
+        old_period = h.periodicity_months
+        new_period = int(request.form['period'])
         h.name = request.form['name']
-        h.periodicity_months = int(request.form['period'])
+        h.periodicity_months = new_period
+
+        # ← КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: обновляем у всех сотрудников!
+        if old_period != new_period:
+            EmployeeHazard.query.filter_by(hazard_id=id).update(
+                dict(periodicity_months=new_period)
+            )
+
         db.session.commit()
+        flash("Вредность обновлена и применена ко всем сотрудникам!", "success")
         return redirect(url_for('admin'))
+
     return render_template('edit_hazard.html', h=h)
 
 @app.route('/admin/hazard/<int:id>/delete')
@@ -315,7 +384,11 @@ def delete_hazard(id):
     return redirect(url_for('admin'))
 
 # ====================== ЗАПУСК ======================
+# if __name__ == '__main__':
+#     with app.app_context():
+#         init_db()
+#     app.run(debug=True)
 if __name__ == '__main__':
     with app.app_context():
         init_db()
-    app.run(debug=True)
+    app.run(host='10.6.2.23', port=5000, debug=True)
