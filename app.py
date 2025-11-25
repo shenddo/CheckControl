@@ -1,4 +1,5 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask,render_template, session, redirect, url_for, request, flash
+from functools import wraps
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 
@@ -85,9 +86,57 @@ def init_db():
         ]
         db.session.bulk_save_objects(hazards)
         db.session.commit()
+# ====================== АВТОРИЗАЦИЯ ======================
+# Хардкод пользователей (можно потом вынести в БД)
+USERS = {
+    "admin": {"password": "admin123", "role": "admin"},
+    "user":  {"password": "user123",  "role": "user"},
+    # Добавляй сколько угодно: "ivanov": {"password": "123", "role": "user"},
+}
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session.get("user") is None:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session.get("user") is None:
+            return redirect(url_for('login', next=request.url))
+        if session.get("role") != "admin":
+            flash("Доступ запрещён", "danger")
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
 # ====================== ГЛАВНАЯ ======================
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = USERS.get(username)
+        if user and user['password'] == password:
+            session['user'] = username
+            session['role'] = user['role']
+            flash(f"Добро пожаловать, {username}!", "success")
+            next_page = request.form.get('next') or url_for('index')
+            return redirect(next_page)
+        flash("Неверный логин или пароль", "danger")
+    return render_template('login.html', next=request.args.get('next'))
+
+@app.route('/logout')
+@login_required
+def logout():
+    session.clear()
+    flash("Вы вышли из системы", "info")
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
     search = request.args.get('search', '').strip()
     position = request.args.get('position', '')
@@ -150,6 +199,7 @@ def index():
 
 # ====================== УСТАНОВКА ДАТЫ И НОМЕРА ======================
 @app.route('/set_date', methods=['POST'])
+@admin_required
 def set_date():
     emp_id = int(request.form['emp_id'])
     kind = request.form['kind']
@@ -179,6 +229,7 @@ def set_date():
 # ====================== РЕДАКТИРОВАНИЕ СОТРУДНИКА (без потери дат!) ======================
 @app.route('/employee/add', methods=['GET', 'POST'])
 @app.route('/employee/<int:id>', methods=['GET', 'POST'])
+@admin_required
 def edit_employee(id=None):
     emp = Employee.query.get(id) if id else None
 
@@ -221,6 +272,7 @@ def edit_employee(id=None):
 
 # ====================== УДАЛЕНИЕ ======================
 @app.route('/delete/<int:id>')
+@admin_required
 def delete_employee(id):
     emp = Employee.query.get_or_404(id)
     db.session.delete(emp)
@@ -229,10 +281,12 @@ def delete_employee(id):
 
 # ====================== АДМИНКА ВРЕДНОСТЕЙ ======================
 @app.route('/admin')
+@admin_required
 def admin():
     return render_template('admin_hazards.html', hazards=Hazard.query.all())
 
 @app.route('/admin/hazard/add', methods=['GET', 'POST'])
+@admin_required
 def add_hazard():
     if request.method == 'POST':
         h = Hazard(name=request.form['name'], periodicity_months=int(request.form['period']))
@@ -241,6 +295,7 @@ def add_hazard():
     return redirect(url_for('admin'))
 
 @app.route('/admin/hazard/<int:id>/edit', methods=['GET', 'POST'])
+@admin_required
 def edit_hazard(id):
     h = Hazard.query.get_or_404(id)
     if request.method == 'POST':
@@ -251,6 +306,7 @@ def edit_hazard(id):
     return render_template('edit_hazard.html', h=h)
 
 @app.route('/admin/hazard/<int:id>/delete')
+@admin_required
 def delete_hazard(id):
     h = Hazard.query.get_or_404(id)
     if not EmployeeHazard.query.filter_by(hazard_id=id).first():
