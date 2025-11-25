@@ -119,7 +119,7 @@
                             <!-- Должность и участок — только в первой строке -->
                             <td class="align-middle" {% if not loop.first %}style="display:none;"{% else %}rowspan="{{ item.checks|length }}"{% endif %}>
                                 <div><strong>{{ item.emp.position }}</strong></div>
-                                {% if item.emp.section and item.emp.section != 'Общий' %}
+                                {% if item.emp.section and item.emp.section != '' %}
                                     <small class="text-muted">{{ item.emp.section }}</small>
                                 {% endif %}
                             </td>

@@ -179,7 +179,7 @@ def index():
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='training', kind_id=et.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = last + relativedelta(months=+et.periodicity_months) if last else None
+            next_d = (last + relativedelta(months=+et.periodicity_months))- timedelta(days=1) if last else None
             st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=30) else "ok")
             if status and st not in [status, 'never']:
                 continue
@@ -196,13 +196,13 @@ def index():
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='hazard', kind_id=eh.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = last + relativedelta(months=+et.periodicity_months) if last else None
+            next_d = (last + relativedelta(months=+eh.periodicity_months))- timedelta(days=1) if last else None
             st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=45) else "ok")
             if status and st not in [status, 'never']:
                 continue
             show_employee = True
             checks.append({
-                'name': f"Медосмотр: {h.name}", 'category': 'Медосмотр', 'period': eh.periodicity_months,
+                'name': f"{h.name}", 'category': 'Медосмотр', 'period': eh.periodicity_months,
                 'last': last, 'next': next_d, 'doc': doc, 'status': st,
                 'kind': 'hazard', 'kind_id': eh.id
             })
@@ -267,79 +267,68 @@ def edit_employee(id=None):
     emp = Employee.query.get(id) if id else None
 
     if request.method == 'POST':
-        full_name = request.form['full_name'].strip()
-        position = request.form['position'].strip()
-        section = request.form.get('section').strip()
+        # Обновляем основные поля
+        emp.full_name = request.form['full_name'].strip()
+        emp.position = request.form['position'].strip()
+        emp.section = request.form.get('section', '').strip() or 'Общий'
         birth_date_str = request.form.get('birth_date', '').strip()
-        address = request.form.get('address', '').strip()
-        if not section:
-            section = 'Общий'
+        emp.birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None
+        emp.address = request.form.get('address', '').strip() or None
 
-        if not emp:
-            emp = Employee(full_name=full_name, position=position, section=section,birth_date=datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None,
-                address=address or None)
-            db.session.add(emp)
-            db.session.flush()
-            is_new = True
-        else:
-            emp.full_name = full_name
-            emp.position = position
-            emp.section = section
-            emp.birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None
-            emp.address = address or None
-            is_new = False
-
-        db.session.flush()
-
-        if is_new:
-            pass  # при создании старых связей нет
-        else:
-            # Удаляем старые связи только при редактировании
-            EmployeeTraining.query.filter_by(employee_id=emp.id).delete()
-            EmployeeHazard.query.filter_by(employee_id=emp.id).delete()
-
-        # Создаём новые связи
+        # === ОБУЧЕНИЕ — можно пересоздать (там нет дат) ===
+        EmployeeTraining.query.filter_by(employee_id=emp.id).delete()
         for tr in TrainingType.query.all():
-            period_str = request.form.get(f'training_{tr.id}')
-            if period_str and period_str.strip():
-                period = int(period_str)
-                et = EmployeeTraining(employee_id=emp.id, training_type_id=tr.id, periodicity_months=period)
-                db.session.add(et)
+            period = int(request.form.get(f'training_{tr.id}', tr.default_periodicity))
+            db.session.add(EmployeeTraining(employee_id=emp.id, training_type_id=tr.id, periodicity_months=period))
 
-        for h_id in request.form.getlist('hazards'):
-            h_id = int(h_id)
-            hazard = Hazard.query.get(h_id)
-            eh = EmployeeHazard(
-                employee_id=emp.id,
-                hazard_id=h_id,
-                periodicity_months=hazard.periodicity_months
-            )
-            db.session.add(eh)
+        # === ВРЕДНОСТИ — НЕ УДАЛЯЕМ! Только обновляем ===
+        # 1. Получаем текущие вредности сотрудника
+        current_hazards = {eh.hazard_id: eh for eh in emp.employee_hazards}
+
+        # 2. Выбранные в форме
+        selected_hazard_ids = {int(x) for x in request.form.getlist('hazards')}
+
+        # 3. Удаляем те, что убрали из списка
+        for hazard_id, eh in list(current_hazards.items()):
+            if hazard_id not in selected_hazard_ids:
+                # Удаляем связь и все связанные проверки!
+                EmployeeCheck.query.filter_by(kind='hazard', kind_id=eh.id).delete()
+                db.session.delete(eh)
+
+        # 4. Добавляем новые
+        for hazard_id in selected_hazard_ids:
+            if hazard_id not in current_hazards:
+                hazard = Hazard.query.get(hazard_id)
+                new_eh = EmployeeHazard(
+                    employee_id=emp.id,
+                    hazard_id=hazard_id,
+                    periodicity_months=hazard.periodicity_months
+                )
+                db.session.add(new_eh)
+
+        # 5. Обновляем периодичность у существующих (на случай изменения в админке)
+        for eh in emp.employee_hazards:
+            hazard = Hazard.query.get(eh.hazard_id)
+            eh.periodicity_months = hazard.periodicity_months
 
         db.session.commit()
-        flash("Сотрудник сохранён!", "success")
+        flash("Сотрудник сохранён! Даты прохождения не затронуты.", "success")
         return redirect(url_for('index'))
 
-    # GET — отображение формы
+    # GET — как было
     trainings = TrainingType.query.all()
     hazards = Hazard.query.all()
     emp_trainings = {et.training_type_id: et.periodicity_months for et in (emp.employee_trainings if emp else [])}
-    emp_hazards ={eh.hazard_id for eh in (emp.employee_hazards if emp else [])}
-
-    # ← ВАЖНО: безопасно передаём section
+    emp_hazards = {eh.hazard_id for eh in (emp.employee_hazards if emp else [])}
     current_section = emp.section if emp else ''
     current_birth_date = emp.birth_date.strftime('%Y-%m-%d') if emp and emp.birth_date else ''
     current_address = emp.address if emp else ''
 
     return render_template('edit_employee.html',
-                           emp=emp,
-                           trainings=trainings,
-                           hazards=hazards,
-                           emp_trainings=emp_trainings,
-                           emp_hazards=emp_hazards,
+                           emp=emp, trainings=trainings, hazards=hazards,
+                           emp_trainings=emp_trainings, emp_hazards=emp_hazards,
                            current_section=current_section,
-                           current_birth_date=current_birth_date,
-                           current_address=current_address)
+                           current_birth_date=current_birth_date, current_address=current_address)
 # ====================== УДАЛЕНИЕ ======================
 @app.route('/delete/<int:id>')
 @admin_required
@@ -369,19 +358,16 @@ def add_hazard():
 def edit_hazard(id):
     h = Hazard.query.get_or_404(id)
     if request.method == 'POST':
-        old_period = h.periodicity_months
-        new_period = int(request.form['period'])
-        h.name = request.form['name']
-        h.periodicity_months = new_period
+        h.name = request.form['name'].strip()
+        h.periodicity_months = int(request.form['period'])
 
-        # ← КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: обновляем у всех сотрудников!
-        if old_period != new_period:
-            EmployeeHazard.query.filter_by(hazard_id=id).update(
-                dict(periodicity_months=new_period)
-            )
-
+        # Обновляем у всех сотрудников
+        updated = EmployeeHazard.query.filter_by(hazard_id=h.id).update({
+            "periodicity_months": h.periodicity_months
+        })
         db.session.commit()
-        flash("Вредность обновлена и применена ко всем сотрудникам!", "success")
+
+        flash(f"Вредность обновлена! Обновлено записей: {updated}", "success")
         return redirect(url_for('admin'))
 
     return render_template('edit_hazard.html', h=h)
