@@ -2,6 +2,7 @@ from flask import Flask,render_template, session, redirect, url_for, request, fl
 from functools import wraps
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 from datetime import datetime
 
@@ -21,6 +22,8 @@ class Employee(db.Model):
     full_name = db.Column(db.String(100), nullable=False)
     position = db.Column(db.String(100), nullable=False)
     section = db.Column(db.String(100))
+    birth_date = db.Column(db.Date)           # ← Дата рождения
+    address = db.Column(db.String(200))       # ← Адрес прописки
 
     employee_hazards = db.relationship('EmployeeHazard', backref='employee', lazy=True, cascade="all, delete-orphan")
     employee_trainings = db.relationship('EmployeeTraining', backref='employee', lazy=True, cascade="all, delete-orphan")
@@ -176,7 +179,7 @@ def index():
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='training', kind_id=et.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = last + timedelta(days=et.periodicity_months * 30) if last else None
+            next_d = last + relativedelta(months=+et.periodicity_months) if last else None
             st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=30) else "ok")
             if status and st not in [status, 'never']:
                 continue
@@ -193,8 +196,8 @@ def index():
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='hazard', kind_id=eh.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = last + timedelta(days=eh.periodicity_months * 30) if last else None
-            st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=30) else "ok")
+            next_d = last + relativedelta(months=+et.periodicity_months) if last else None
+            st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=45) else "ok")
             if status and st not in [status, 'never']:
                 continue
             show_employee = True
@@ -267,11 +270,14 @@ def edit_employee(id=None):
         full_name = request.form['full_name'].strip()
         position = request.form['position'].strip()
         section = request.form.get('section').strip()
+        birth_date_str = request.form.get('birth_date', '').strip()
+        address = request.form.get('address', '').strip()
         if not section:
             section = 'Общий'
 
         if not emp:
-            emp = Employee(full_name=full_name, position=position, section=section)
+            emp = Employee(full_name=full_name, position=position, section=section,birth_date=datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None,
+                address=address or None)
             db.session.add(emp)
             db.session.flush()
             is_new = True
@@ -279,6 +285,8 @@ def edit_employee(id=None):
             emp.full_name = full_name
             emp.position = position
             emp.section = section
+            emp.birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date() if birth_date_str else None
+            emp.address = address or None
             is_new = False
 
         db.session.flush()
@@ -320,6 +328,8 @@ def edit_employee(id=None):
 
     # ← ВАЖНО: безопасно передаём section
     current_section = emp.section if emp else ''
+    current_birth_date = emp.birth_date.strftime('%Y-%m-%d') if emp and emp.birth_date else ''
+    current_address = emp.address if emp else ''
 
     return render_template('edit_employee.html',
                            emp=emp,
@@ -327,7 +337,9 @@ def edit_employee(id=None):
                            hazards=hazards,
                            emp_trainings=emp_trainings,
                            emp_hazards=emp_hazards,
-                           current_section=current_section)
+                           current_section=current_section,
+                           current_birth_date=current_birth_date,
+                           current_address=current_address)
 # ====================== УДАЛЕНИЕ ======================
 @app.route('/delete/<int:id>')
 @admin_required
@@ -384,11 +396,11 @@ def delete_hazard(id):
     return redirect(url_for('admin'))
 
 # ====================== ЗАПУСК ======================
-# if __name__ == '__main__':
-#     with app.app_context():
-#         init_db()
-#     app.run(debug=True)
 if __name__ == '__main__':
     with app.app_context():
         init_db()
-    app.run(host='10.6.2.23', port=5000, debug=True)
+    app.run(debug=True)
+# if __name__ == '__main__':
+#     with app.app_context():
+#         init_db()
+#     app.run(host='10.6.2.23', port=5000, debug=True)
