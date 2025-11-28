@@ -82,7 +82,7 @@ def init_db():
         trainings = [
             TrainingType(name="Охрана труда", default_periodicity=36),
             TrainingType(name="Электробезопасность", default_periodicity=12),
-            TrainingType(name="Промышленная безопасность", default_periodicity=12),
+            
         ]
         db.session.bulk_save_objects(trainings)
 
@@ -148,10 +148,17 @@ def logout():
 @app.route('/')
 @login_required
 def index():
+    # === Все параметры фильтров ===
     search = request.args.get('search', '').strip()
     position = request.args.get('position', '')
     section_filter = request.args.get('section', '')
-    status = request.args.get('status', '')      # overdue / soon
+    status = request.args.get('status', '')
+    check_name = request.args.get('check_name', '').strip()       # ← новое
+    next_year_str = request.args.get('next_year', '').strip()    # ← новое
+
+    next_year = None
+    if next_year_str.isdigit():
+        next_year = int(next_year_str)
 
     query = Employee.query
     if search:
@@ -164,25 +171,37 @@ def index():
     employees = query.all()
     today = datetime.today().date()
     data = []
-    row_number = 1  # ← нумерация
+    row_number = 1
 
-    # Список всех участков для фильтра
+    # Список всех участков и должностей
     all_sections = sorted({e.section for e in Employee.query.all() if e.section})
 
     for emp in employees:
         checks = []
         show_employee = False
 
-        # Обучения
+        # === Обучения ===
         for et in emp.employee_trainings:
             tr = et.training_type
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='training', kind_id=et.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = (last + relativedelta(months=+et.periodicity_months))- timedelta(days=1) if last else None
+            next_d = (last + relativedelta(months=+et.periodicity_months)) - timedelta(days=1) if last else None
+
             st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=30) else "ok")
+
+            # Фильтр по статусу
             if status and st not in [status, 'never']:
                 continue
+
+            # Фильтр по названию проверки
+            if check_name and check_name.lower() not in tr.name.lower():
+                continue
+
+            # Фильтр по году следующего прохождения
+            if next_year and next_d and next_d.year != next_year:
+                continue
+
             show_employee = True
             checks.append({
                 'name': tr.name, 'category': 'Обучение', 'period': et.periodicity_months,
@@ -190,24 +209,35 @@ def index():
                 'kind': 'training', 'kind_id': et.id
             })
 
-        # Вредности
+        # === Вредности (медосмотры) ===
         for eh in emp.employee_hazards:
             h = eh.hazard
             ec = EmployeeCheck.query.filter_by(employee_id=emp.id, kind='hazard', kind_id=eh.id).first()
             last = ec.last_date if ec else None
             doc = ec.document_number if ec else None
-            next_d = (last + relativedelta(months=+eh.periodicity_months))- timedelta(days=1) if last else None
+            next_d = (last + relativedelta(months=+eh.periodicity_months)) - timedelta(days=1) if last else None
+
             st = "never" if not last else ("overdue" if next_d <= today else "soon" if next_d <= today + timedelta(days=45) else "ok")
+
             if status and st not in [status, 'never']:
                 continue
+
+            # Фильтр по названию вредности
+            if check_name and check_name.lower() not in h.name.lower():
+                continue
+
+            # Фильтр по году следующего медосмотра
+            if next_year and next_d and next_d.year != next_year:
+                continue
+
             show_employee = True
             checks.append({
-                'name': f"{h.name}", 'category': 'Медосмотр', 'period': eh.periodicity_months,
+                'name': h.name, 'category': 'Медосмотр', 'period': eh.periodicity_months,
                 'last': last, 'next': next_d, 'doc': doc, 'status': st,
                 'kind': 'hazard', 'kind_id': eh.id
             })
 
-        if show_employee or not status:
+        if show_employee or not (status or check_name or next_year):
             data.append({
                 'number': row_number,
                 'emp': emp,
@@ -221,6 +251,8 @@ def index():
                            position=position,
                            section_filter=section_filter,
                            status=status,
+                           check_name=check_name,
+                           next_year=next_year_str,
                            positions=sorted({e.position for e in Employee.query.all()}),
                            sections=all_sections,
                            format_period=format_period,
@@ -360,7 +392,22 @@ def delete_employee(id):
 @app.route('/admin')
 @admin_required
 def admin():
-    return render_template('admin_hazards.html', hazards=Hazard.query.all())
+    search = request.args.get('search', '').strip().lower()
+    
+    if search:
+        # Приводим все имена к нижнему регистру в Python
+        all_hazards = Hazard.query.all()
+        hazards = [
+            h for h in all_hazards 
+            if search in h.name.lower()
+        ]
+        hazards.sort(key=lambda x: x.name)
+    else:
+        hazards = Hazard.query.order_by(Hazard.name).all()
+
+    return render_template('admin_hazards.html', 
+                           hazards=hazards, 
+                           search=request.args.get('search', ''))
 
 @app.route('/admin/hazard/add', methods=['GET', 'POST'])
 @admin_required
