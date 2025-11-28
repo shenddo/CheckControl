@@ -80,7 +80,7 @@ def init_db():
     db.create_all()
     if TrainingType.query.first() is None:
         trainings = [
-            TrainingType(name="Охрана труда", default_periodicity=36),
+            TrainingType(name="Охрана труда", default_periodicity=12),
             TrainingType(name="Электробезопасность", default_periodicity=12),
             
         ]

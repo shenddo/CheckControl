@@ -303,6 +303,28 @@ document.querySelectorAll('[data-bs-toggle="collapse"]').forEach(header => {
 });
 
 </script>
+<script>
+// Защита от ввода больше 4 цифр в год в поле даты
+document.getElementById('input_date').addEventListener('input', function(e) {
+    let value = e.target.value;
+    if (value.length > 10) {
+        e.target.value = value.slice(0, 10); // обрезаем лишнее
+    }
+    
+    // Если вручную ввели год из 5+ цифр — обрезаем до 4
+    if (value.match(/^\d{5,}/)) {
+        e.target.value = value.replace(/^(\d{4})\d+/, '$1') + value.substring(value.search(/-/));
+    }
+    
+    // Если год < 1900 или > 2100 — сбрасываем (опционально)
+    const year = value.split('-')[0];
+    if (year && (year < '1900' || year > '2100')) {
+        e.target.setCustomValidity('Год должен быть от 1900 до 2100');
+    } else {
+        e.target.setCustomValidity('');
+    }
+});
+</script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // Автоматически открываем карточку, если передан open_id
